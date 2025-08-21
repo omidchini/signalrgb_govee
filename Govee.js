@@ -19,9 +19,7 @@ export function ControllableParameters() {
 		{"property":"TurnOffOnShutdown", "group":"settings", "label":"Turn off on App Exit", "type":"boolean", "default":"false"},
 		{"property":"LightingMode", "group":"lighting", "label":"Lighting Mode", "type":"combobox", "values":["Canvas", "Forced"], "default":"Canvas"},
 		{"property":"forcedColor", "group":"lighting", "label":"Forced Color", "min":"0", "max":"360", "type":"color", "default":"#009bde"},
-		{"property":"enabledBrightness", "group":"lighting", "label":"Disabled Brightness", "type":"number", "min":"0", "max":"100", "step":"1", "default":"100"},
 		{"property":"disabledColor", "group":"lighting", "label":"Disabled Color", "type":"color", "default":"#ffffff"},
-		//{"property":"disabledUseTemperature", "group":"lighting", "label":"Use Temperture istead of Color", "type":"boolean", "default":"true"},
 		{"property":"disabledTemperature", "group":"lighting", "label":"Disabled Temperature (Kelvin)", "type":"number", "min":"0", "max":"6500", "step":"100", "default":"2000"},
 		{"property":"disabledBrightness", "group":"lighting", "label":"Disabled Brightness", "type":"number", "min":"0", "max":"100", "step":"1", "default":"100"},
 	];
@@ -66,7 +64,6 @@ export function Initialize(){
 	govee.SetRazerMode(true);
 	govee.SetRazerMode(true);
 	govee.setDeviceState(true);
-	govee.SetBrightness(enabledBrightness);
 }
 
 export function Render(){
@@ -92,29 +89,17 @@ export function onvariableLedCountChanged(){
 	SetLedCount(variableLedCount);
 }
 
-function GetRGBFromSubdevices(){
-	const RGBData = [];
-
-	for(const subdevice of subdevices){
-		const ledPositions = subdevice.ledPositions;
-
-		for(let i = 0 ; i < ledPositions.length; i++){
-			const ledPosition = ledPositions[i];
-			let color;
-
-			if (LightingMode === "Forced") {
-				color = hexToRgb(forcedColor);
-			} else {
-				color = device.subdeviceColor(subdevice.id, ledPosition[0], ledPosition[1]);
-			}
-
-			RGBData[i * 3] = color[0];
-			RGBData[i * 3 + 1] = color[1];
-			RGBData[i * 3 + 2] = color[2];
-		}
-	}
-
-	return RGBData;
+function GetRGBFromSubdevices() {
+  const RGBData = [];
+  for (const sd of subdevices) {
+    for (const [x, y] of sd.ledPositions) {
+      const color = (LightingMode === "Forced")
+        ? hexToRgb(forcedColor)
+        : device.subdeviceColor(sd.id, x, y);
+      RGBData.push(color[0], color[1], color[2]);
+    }
+  }
+  return RGBData;
 }
 
 function GetDeviceRGB(){
@@ -629,10 +614,10 @@ class UdpSocketServer{
 	}
 
 	onConnection(){
-		service.log('Connected to remote socket!');
-		service.log("Remote Address:");
-		service.log(this.server.remoteAddress(), {pretty: true});
-		service.log("Sending Check to socket");
+		device.log('Connected to remote socket!');
+		device.log("Remote Address:");
+		device.log(this.server.remoteAddress(), {pretty: true});
+		device.log("Sending Check to socket");
 
 		const bytesWritten = this.server.send(JSON.stringify({
 			msg: {
@@ -669,7 +654,7 @@ class UdpSocketServer{
 		}
 	};
 	onError(code, message){
-		service.log(`Error: ${code} - ${message}`);
+		device.log(`Error: ${code} - ${message}`);
 		//this.server.close(); // We're done here
 	};
 }
