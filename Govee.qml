@@ -48,7 +48,7 @@ Item {
     
          Pane {
                 width: 352
-                height: 136
+                height: 166
                 padding: 8
 
                 background: Rectangle {
@@ -66,6 +66,15 @@ Item {
 				        font.family: theme.primaryfont
                         font.weight: Font.Bold
                         font.pixelSize: 16
+                    }
+
+                    Text{
+                        color: theme.secondarytextcolor
+                        text: "Use this for cross-subnet setups where multicast discovery cannot reach your device."
+                        font.family: theme.secondaryfont
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
+                        Layout.preferredWidth: 334
                     }
 
                     TextField {

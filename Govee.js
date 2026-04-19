@@ -1,6 +1,13 @@
 import udp from "@SignalRGB/udp";
 export function Name() { return "Govee"; }
 export function Version() { return "1.0.0"; }
+
+/**
+ * For cross-subnet setups where multicast discovery (239.255.255.250) cannot
+ * reach Govee devices, add their static IP addresses here.
+ * Example: const MANUAL_DEVICE_IPS = ["10.0.10.194", "10.0.10.195"];
+ */
+const MANUAL_DEVICE_IPS = ["10.0.10.194"];
 export function Type() { return "network"; }
 export function Publisher() { return "WhirlwindFX"; }
 export function Size() { return [22, 1]; }
@@ -212,6 +219,7 @@ export function DiscoveryService() {
 	this.Initialize = function(){
 		service.log("Searching for Govee network devices...");
 		this.LoadCachedDevices();
+		this.ScanManualIPs();
 	};
 
 	this.UdpBroadcastPort = 4001;
@@ -230,6 +238,13 @@ export function DiscoveryService() {
 
 		for(const [key, value] of this.cache.Entries()){
 			service.log(`Found Cached Device: [${key}: ${JSON.stringify(value)}]`);
+			// Validate IP before using it
+			const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+			if(!ipRegex.test(value.ip)) {
+				service.log(`Skipping invalid cached IP: "${value.ip}" — purging entry.`);
+				this.cache.Remove(key);
+				continue;
+			}
 			this.checkCachedDevice(value.ip);
 		}
 	};
@@ -242,9 +257,18 @@ export function DiscoveryService() {
 			UDPServer = undefined;
 		}
 
+		// Stop ALL existing discovery sockets to free port 4005 before binding again
+		for(const [key, value] of this.activeSockets.entries()){
+			service.log(`Stopping existing discovery socket for IP: ${key}`);
+			value.stop();
+		}
+		this.activeSockets.clear();
+
 		const socketServer = new UdpSocketServer({
 			ip : ipAddress,
-			isDiscoveryServer : true
+			isDiscoveryServer : true,
+			listenPort : 4005   // MikroTik remaps Govee's reply (src:10.0.10.x → dst:4002) to port 4005
+			                    // because the SignalRGB framework already owns port 4002
 		});
 
 		this.activeSockets.set(ipAddress, socketServer);
@@ -267,25 +291,45 @@ export function DiscoveryService() {
 	};
 
 	this.forceDiscovery = function(value) {
-		const packetType = JSON.parse(value.response).msg.cmd;
-		//service.log(`Type: ${packetType}`);
-		
+		service.log(`forceDiscovery() called`);
+		service.log(value, {pretty: true});
+
+		let packetType;
+		try {
+			packetType = JSON.parse(value.response).msg.cmd;
+		} catch(e) {
+			service.log(`forceDiscovery() - failed to parse response: ${e}`);
+			return;
+		}
+
+		service.log(`forceDiscovery() packetType: ${packetType}`);
+
 		if(packetType != "scan"){
 			return;
 		}
 		
 		const isValid = JSON.parse(value.response).msg.data.hasOwnProperty("ip");
+		service.log(`forceDiscovery() isValid: ${isValid}`);
 		if(!isValid){
 			return;
 		}
 
-		service.log(`New host discovered!`);
+		service.log(`New host discovered via forceDiscovery!`);
 		service.log(value);
 		this.CreateControllerDevice(value);
 	};
 
 	this.purgeIPCache = function() {
 		this.cache.PurgeCache();
+	};
+
+	this.ScanManualIPs = function() {
+		if(MANUAL_DEVICE_IPS.length === 0) return;
+		service.log(`Scanning ${MANUAL_DEVICE_IPS.length} manually configured IP(s)...`);
+		for(const ip of MANUAL_DEVICE_IPS) {
+			service.log(`Scanning manual IP: ${ip}`);
+			this.checkCachedDevice(ip);
+		}
 	};
 
 	this.CheckForDevices = function(){
@@ -303,6 +347,9 @@ export function DiscoveryService() {
 				},
 			}
 		}));
+
+		// Also unicast to manually configured IPs (cross-subnet support)
+		this.ScanManualIPs();
 	};
 
 	this.Update = function(){
@@ -319,14 +366,25 @@ export function DiscoveryService() {
 	};
 
 	this.Discovered = function(value) {
-		const packetType = JSON.parse(value.response).msg.cmd;
-		//service.log(`Type: ${packetType}`);
-		
+		service.log(`Discovered() called`);
+		service.log(value, {pretty: true});
+
+		let packetType;
+		try {
+			packetType = JSON.parse(value.response).msg.cmd;
+		} catch(e) {
+			service.log(`Discovered() - failed to parse response: ${e}`);
+			return;
+		}
+
+		service.log(`Discovered() packetType: ${packetType}`);
+
 		if(packetType != "scan"){
 			return;
 		}
 		
 		const isValid = JSON.parse(value.response).msg.data.hasOwnProperty("ip");
+		service.log(`Discovered() isValid: ${isValid}`);
 		if(!isValid){
 			return;
 		}
@@ -585,7 +643,7 @@ class UdpSocketServer{
 	send(packet) {
 		if(!this.server) {
 			this.server = udp.createSocket();
-			device.log("Defining new UDP Socket so we can send data.");
+			service.log("Defining new UDP Socket so we can send data.");
 		}
 
 		this.server.send(packet);
@@ -608,28 +666,30 @@ class UdpSocketServer{
 
 	stop(){
 		if(this.server) {
-			this.server.disconnect();
+			try { this.server.disconnect(); } catch(e) { /* may already be disconnected */ }
 			this.server.close();
 		}
 	}
 
 	onConnection(){
-		device.log('Connected to remote socket!');
-		device.log("Remote Address:");
-		device.log(this.server.remoteAddress(), {pretty: true});
-		device.log("Sending Check to socket");
+		service.log('Connected to remote socket!');
+		service.log("Remote Address:");
+		service.log(this.server.remoteAddress(), {pretty: true});
 
-		const bytesWritten = this.server.send(JSON.stringify({
+		const packet = JSON.stringify({
 			msg: {
 				cmd: "scan",
 				data: {
 					account_topic: "reserve",
 				},
 			}
-		}));
+		});
 
+		const bytesWritten = this.server.send(packet);
 		if(bytesWritten === -1){
-			service.log('Error sending data to remote socket');
+			service.log('Error sending scan packet');
+		} else {
+			service.log(`Scan packet sent (${bytesWritten} bytes)`);
 		}
 	};
 
@@ -641,12 +701,10 @@ class UdpSocketServer{
 	onListening(){
 		const address = this.server.address();
 		service.log(`Server is listening at port ${address.port}`);
-
-		// Check if the socket is bound (no error means it's bound but we'll check anyway)
 		service.log(`Socket Bound: ${this.server.state === this.server.BoundState}`);
 	};
 	onMessage(msg){
-		service.log('Data received from client');
+		service.log('onMessage() called');
 		service.log(msg, {pretty: true});
 
 		if(this.isDiscoveryServer) {
@@ -654,7 +712,7 @@ class UdpSocketServer{
 		}
 	};
 	onError(code, message){
-		device.log(`Error: ${code} - ${message}`);
+		service.log(`Error: ${code} - ${message}`);
 		//this.server.close(); // We're done here
 	};
 }
